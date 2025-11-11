@@ -5,37 +5,66 @@ Description: >
 
   Sample SAM Template for event-driven-order-processing
 
-# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
-    Timeout: 3
+    Timeout: 3  # Keep SQS VisibilityTimeout >= ~6x this (set to 30s below)
 
 Resources:
+  # --- Queues ---
+  OrdersQueueDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: orders-dlq
+
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: orders-queue
+      # VisibilityTimeout should comfortably exceed Lambda timeout to avoid duplicate processing
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrdersQueueDLQ.Arn
+        maxReceiveCount: 5
+
+  # --- Lambda ---
   HelloWorldFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Type: AWS::Serverless::Function
     Properties:
       CodeUri: hello_world/
       Handler: app.lambda_handler
       Runtime: python3.11
       Architectures:
         - x86_64
+      # Grant the Lambda permission to poll & delete messages from this SQS queue
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !GetAtt OrdersQueue.QueueName
       Events:
-        HelloWorld:
-          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+        SQSEvent:
+          Type: SQS
           Properties:
-            Path: /hello
-            Method: get
+            Queue: !GetAtt OrdersQueue.Arn
+            # Tune these for throughput/latency tradeoffs
+            BatchSize: 10                         # up to 10 for standard queues
+            MaximumBatchingWindowInSeconds: 2     # small delay to form batches
+            Enabled: true
 
 Outputs:
-  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
-  # Find out more about other implicit resources you can reference within SAM
-  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
-  HelloWorldApi:
-    Description: "API Gateway endpoint URL for Prod stage for Hello World function"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/hello/"
   HelloWorldFunction:
     Description: "Hello World Lambda Function ARN"
     Value: !GetAtt HelloWorldFunction.Arn
   HelloWorldFunctionIamRole:
     Description: "Implicit IAM Role created for Hello World function"
     Value: !GetAtt HelloWorldFunctionRole.Arn
+  OrdersQueueUrl:
+    Description: "Orders SQS Queue URL"
+    Value: !Ref OrdersQueue
+  OrdersQueueArn:
+    Description: "Orders SQS Queue ARN"
+    Value: !GetAtt OrdersQueue.Arn
+  OrdersDLQUrl:
+    Description: "Orders DLQ URL"
+    Value: !Ref OrdersQueueDLQ
+  OrdersDLQArn:
+    Description: "Orders DLQ ARN"
+    Value: !GetAtt OrdersQueueDLQ.Arn
